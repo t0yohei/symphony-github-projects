@@ -1,5 +1,6 @@
 import type { Logger } from "../logging/logger.js";
 import type { NormalizedWorkItem } from "../model/work-item.js";
+import type { AgentRunner, RunnerPromptTemplate } from "../runner/agent-runner.js";
 import type { TrackerAdapter } from "../tracker/adapter.js";
 import type { WorkflowContract } from "../workflow/contract.js";
 
@@ -23,6 +24,16 @@ export interface PollingRuntimeOptions {
   now?: () => number;
 }
 
+export interface RuntimeRunnerContext {
+  workspaceResolver(item: NormalizedWorkItem): string;
+  promptTemplate: RunnerPromptTemplate;
+  command: {
+    command: string;
+    args?: string[];
+    env?: NodeJS.ProcessEnv;
+  };
+}
+
 export class PollingRuntime implements OrchestratorRuntime {
   private readonly states = new Map<string, ItemRuntimeState>();
   private readonly maxRetryAttempts: number;
@@ -33,6 +44,8 @@ export class PollingRuntime implements OrchestratorRuntime {
     private readonly tracker: TrackerAdapter,
     private readonly workflow: WorkflowContract,
     private readonly logger: Logger,
+    private readonly runner?: AgentRunner,
+    private readonly runnerContext?: RuntimeRunnerContext,
     options: PollingRuntimeOptions = {},
   ) {
     this.maxRetryAttempts = options.maxRetryAttempts ?? 3;
@@ -65,6 +78,27 @@ export class PollingRuntime implements OrchestratorRuntime {
       freeSlots,
       maxConcurrency,
     });
+
+    if (!this.runner || !this.runnerContext || selected.length === 0) {
+      return;
+    }
+
+    const item = selected[0];
+    const handle = this.runner.run({
+      item,
+      workspaceDir: this.runnerContext.workspaceResolver(item),
+      promptTemplate: this.runnerContext.promptTemplate,
+      command: this.runnerContext.command,
+    });
+
+    for await (const event of handle.events) {
+      this.logger.info("runtime.runner.event", {
+        itemId: item.id,
+        eventType: event.type,
+      });
+    }
+
+    await handle.result;
   }
 
   markRunning(itemId: string): void {
@@ -98,7 +132,6 @@ export class PollingRuntime implements OrchestratorRuntime {
     this.scheduleRetry(state, reason);
   }
 
-  // test/diagnostic helper
   getItemState(itemId: string): Readonly<ItemRuntimeState> | undefined {
     const state = this.states.get(itemId);
     return state ? { ...state } : undefined;

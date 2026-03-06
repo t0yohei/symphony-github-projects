@@ -35,5 +35,7 @@ npm test
 
 ## Notes
 
+- Work-item normalization rules: `docs/work-item-model.md`
+
 This repo follows the direction in Symphony SPEC:
 <https://github.com/openai/symphony/blob/main/SPEC.md>

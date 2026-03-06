@@ -33,6 +33,7 @@ npm test
 - `src/logging/logger.ts` - structured JSON logger baseline
 - `src/bootstrap.ts` - initialization helper that wires loader/tracker/logger into runtime startup
 - `src/workspace/manager.ts` - deterministic workspace lifecycle manager with hooks and terminal-state cleanup guardrails
+- `src/cli/status.ts` - lightweight status CLI for summarizing structured runtime logs
 
 ## Runtime behavior (current)
 

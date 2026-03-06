@@ -385,6 +385,91 @@ describe('PollingRuntime state machine', () => {
     assert.deepEqual(tracker.markInProgressCalls, ['A', 'C']);
   });
 
+  it('dispatches candidates by priority, then created_at, then identifier', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [
+      {
+        ...item('A', 120),
+        priority: 2,
+        created_at: '2026-01-04T00:00:00Z',
+      },
+      {
+        ...item('B', 121),
+        priority: 1,
+        created_at: '2026-01-03T00:00:00Z',
+      },
+      {
+        ...item('C', 122),
+        priority: 1,
+        created_at: '2026-01-02T00:00:00Z',
+      },
+      {
+        ...item('D', 110),
+        identifier: '#100',
+        priority: 1,
+        created_at: '2026-01-02T00:00:00Z',
+      },
+    ];
+
+    const runtime = new PollingRuntime(
+      tracker,
+      {
+        ...workflow,
+        polling: { ...workflow.polling, maxConcurrency: 4 },
+        runtime: { ...workflow.runtime, maxConcurrency: 4 },
+      },
+      new FakeLogger(),
+      baseRuntimeOptions,
+    );
+
+    await runtime.tick();
+
+    assert.deepEqual(tracker.markInProgressCalls, ['D', 'C', 'B', 'A']);
+  });
+
+  it('places null priority and missing created_at last while keeping stable ties', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [
+      {
+        ...item('A', 201),
+        identifier: '#200',
+        priority: null,
+      },
+      {
+        ...item('B', 202),
+        identifier: '#300',
+        priority: null,
+      },
+      {
+        ...item('C', 203),
+        identifier: '#050',
+        priority: 1,
+        created_at: 'not-a-date',
+      },
+      {
+        ...item('D', 204),
+        identifier: '#060',
+        priority: 1,
+        created_at: 'not-a-date',
+      },
+    ];
+
+    const runtime = new PollingRuntime(
+      tracker,
+      {
+        ...workflow,
+        polling: { ...workflow.polling, maxConcurrency: 4 },
+        runtime: { ...workflow.runtime, maxConcurrency: 4 },
+      },
+      new FakeLogger(),
+      baseRuntimeOptions,
+    );
+
+    await runtime.tick();
+
+    assert.deepEqual(tracker.markInProgressCalls, ['C', 'D', 'A', 'B']);
+  });
+
   it('skips todo dispatch when blocked_by contains non-terminal items', async () => {
     const tracker = new FakeTracker();
     tracker.items = [

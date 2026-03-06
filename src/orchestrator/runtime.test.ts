@@ -27,6 +27,7 @@ class FakeTracker {
   public markDoneCalls: string[] = [];
   public failMarkInProgressFor = new Set<string>();
   public failGetStatesByIds = false;
+  public getStatesByIdsCalls = 0;
 
   async listEligibleItems(): Promise<NormalizedWorkItem[]> {
     return this.items;
@@ -41,6 +42,7 @@ class FakeTracker {
   }
 
   async getStatesByIds(itemIds: string[]): Promise<Record<string, WorkItemState>> {
+    this.getStatesByIdsCalls += 1;
     if (this.failGetStatesByIds) {
       throw new Error('state refresh failed');
     }
@@ -89,13 +91,18 @@ const workflow = {
   agent: { command: 'codex' },
 };
 
+const baseRuntimeOptions = {
+  env: { GITHUB_TOKEN: 'token' },
+  commandExists: () => true,
+};
+
 describe('PollingRuntime state machine', () => {
   it('prevents duplicate dispatch across ticks for already running item', async () => {
     const tracker = new FakeTracker();
     tracker.items = [item('A', 101)];
     tracker.states.A = 'in_progress';
 
-    const runtime = new PollingRuntime(tracker, workflow, new FakeLogger());
+    const runtime = new PollingRuntime(tracker, workflow, new FakeLogger(), baseRuntimeOptions);
 
     await runtime.tick();
     await runtime.tick();
@@ -111,6 +118,7 @@ describe('PollingRuntime state machine', () => {
     tracker.failMarkInProgressFor.add('A');
 
     const runtime = new PollingRuntime(tracker, workflow, new FakeLogger(), {
+      ...baseRuntimeOptions,
       now: () => now,
       continuationRetryDelayMs: 50,
       failureRetryBaseDelayMs: 100,
@@ -147,6 +155,7 @@ describe('PollingRuntime state machine', () => {
     tracker.states.A = 'in_progress';
 
     const runtime = new PollingRuntime(tracker, workflow, new FakeLogger(), {
+      ...baseRuntimeOptions,
       now: () => now,
       continuationRetryDelayMs: 100,
       failureRetryBaseDelayMs: 1000,
@@ -173,7 +182,7 @@ describe('PollingRuntime state machine', () => {
     tracker.states.A = 'in_progress';
     const logger = new FakeLogger();
 
-    const runtime = new PollingRuntime(tracker, workflow, logger);
+    const runtime = new PollingRuntime(tracker, workflow, logger, baseRuntimeOptions);
 
     await runtime.tick();
     tracker.failGetStatesByIds = true;
@@ -196,6 +205,7 @@ describe('PollingRuntime state machine', () => {
     tracker.states.A = 'in_progress';
 
     const runtime = new PollingRuntime(tracker, workflow, new FakeLogger(), {
+      ...baseRuntimeOptions,
       now: () => now,
       stallTimeoutMs: 0,
     });
@@ -214,7 +224,7 @@ describe('PollingRuntime state machine', () => {
     tracker.states.A = 'in_progress';
     const logger = new FakeLogger();
 
-    const runtime = new PollingRuntime(tracker, workflow, logger);
+    const runtime = new PollingRuntime(tracker, workflow, logger, baseRuntimeOptions);
 
     await runtime.tick();
     tracker.states.A = 'todo';
@@ -226,5 +236,53 @@ describe('PollingRuntime state machine', () => {
     assert.ok(
       logger.infoLogs.some((log) => log.message === 'runtime.transition.reconcile_stopped_non_active'),
     );
+  });
+
+  it('skips dispatch on preflight failure without skipping reconciliation', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101), item('B', 102)];
+    tracker.states.A = 'in_progress';
+
+    const logger = new FakeLogger();
+    const runtime = new PollingRuntime(tracker, workflow, logger, baseRuntimeOptions);
+
+    await runtime.tick();
+
+    runtime.applyWorkflow({
+      ...workflow,
+      tracker: {
+        ...workflow.tracker,
+        github: { ...workflow.tracker.github, tokenEnv: 'MISSING_TOKEN' },
+      },
+    });
+
+    await runtime.tick();
+
+    assert.equal(tracker.markInProgressCalls.length, 1);
+    assert.ok(tracker.getStatesByIdsCalls >= 1);
+    assert.ok(logger.warnLogs.some((log) => log.message === 'runtime.preflight.failed'));
+  });
+
+  it('applies workflow update dynamically and uses updated maxConcurrency', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101), item('B', 102)];
+
+    const logger = new FakeLogger();
+    const runtime = new PollingRuntime(tracker, workflow, logger, baseRuntimeOptions);
+
+    await runtime.tick();
+    assert.equal(tracker.markInProgressCalls.length, 1);
+
+    runtime.applyWorkflow({
+      ...workflow,
+      polling: {
+        ...workflow.polling,
+        maxConcurrency: 2,
+      },
+    });
+
+    await runtime.tick();
+    assert.equal(tracker.markInProgressCalls.length, 2);
+    assert.ok(logger.infoLogs.some((log) => log.message === 'runtime.config.applied'));
   });
 });

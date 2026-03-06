@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import type { Logger } from '../logging/logger.js';
 import type { NormalizedWorkItem, WorkItemState } from '../model/work-item.js';
 import type { TrackerAdapter } from '../tracker/adapter.js';
@@ -38,6 +39,8 @@ export interface PollingRuntimeOptions {
   failureRetryBaseDelayMs?: number;
   failureRetryMultiplier?: number;
   failureRetryMaxDelayMs?: number;
+  env?: Record<string, string | undefined>;
+  commandExists?: (command: string) => boolean;
 }
 
 const DEFAULT_STALL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -57,13 +60,17 @@ export class PollingRuntime implements OrchestratorRuntime {
   private readonly failureRetryBaseDelayMs: number;
   private readonly failureRetryMultiplier: number;
   private readonly failureRetryMaxDelayMs: number;
+  private readonly env: Record<string, string | undefined>;
+  private readonly commandExists: (command: string) => boolean;
+  private workflow: WorkflowContract;
 
   constructor(
     private readonly tracker: TrackerAdapter,
-    private readonly workflow: WorkflowContract,
+    workflow: WorkflowContract,
     private readonly logger: Logger,
     options: PollingRuntimeOptions = {},
   ) {
+    this.workflow = workflow;
     this.now = options.now ?? (() => Date.now());
     this.stallTimeoutMs = options.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
     this.continuationRetryDelayMs =
@@ -72,11 +79,19 @@ export class PollingRuntime implements OrchestratorRuntime {
       options.failureRetryBaseDelayMs ?? DEFAULT_FAILURE_RETRY_BASE_DELAY_MS;
     this.failureRetryMultiplier = options.failureRetryMultiplier ?? DEFAULT_FAILURE_RETRY_MULTIPLIER;
     this.failureRetryMaxDelayMs = options.failureRetryMaxDelayMs ?? DEFAULT_FAILURE_RETRY_MAX_DELAY_MS;
+    this.env = options.env ?? process.env;
+    this.commandExists = options.commandExists ?? defaultCommandExists;
   }
 
   async tick(): Promise<void> {
     await this.reconcile();
     await this.fireDueRetries();
+
+    const preflight = this.runDispatchPreflight();
+    if (!preflight.ok) {
+      this.logger.warn('runtime.preflight.failed', preflight.context);
+      return;
+    }
 
     const maxConcurrency = this.resolveMaxConcurrency();
     if (maxConcurrency <= 0) {
@@ -157,6 +172,49 @@ export class PollingRuntime implements OrchestratorRuntime {
       retryAttempts,
       completed: [...this.completed],
     };
+  }
+
+  applyWorkflow(nextWorkflow: WorkflowContract): void {
+    this.workflow = nextWorkflow;
+    this.logger.info('runtime.config.applied', {
+      maxConcurrency: nextWorkflow.polling.maxConcurrency ?? 1,
+      pollIntervalMs: nextWorkflow.polling.intervalMs,
+    });
+  }
+
+  private runDispatchPreflight(): { ok: true } | { ok: false; context: Record<string, unknown> } {
+    const github = this.workflow.tracker?.github;
+    if (!github?.owner || !Number.isInteger(github.projectNumber) || github.projectNumber <= 0) {
+      return {
+        ok: false,
+        context: {
+          reason: 'tracker_config_invalid',
+          owner: github?.owner,
+          projectNumber: github?.projectNumber,
+        },
+      };
+    }
+
+    const tokenEnv = github.tokenEnv;
+    if (typeof tokenEnv !== 'string' || tokenEnv.trim() === '') {
+      return { ok: false, context: { reason: 'tracker_auth_env_missing' } };
+    }
+
+    const token = this.env[tokenEnv];
+    if (!token || token.trim() === '') {
+      return { ok: false, context: { reason: 'tracker_auth_token_unset', tokenEnv } };
+    }
+
+    const command = this.workflow.agent?.command;
+    if (typeof command !== 'string' || command.trim() === '') {
+      return { ok: false, context: { reason: 'agent_command_missing' } };
+    }
+
+    if (!this.commandExists(command)) {
+      return { ok: false, context: { reason: 'agent_command_not_found', command } };
+    }
+
+    return { ok: true };
   }
 
   private async reconcile(): Promise<void> {
@@ -382,6 +440,20 @@ export class PollingRuntime implements OrchestratorRuntime {
     }
     return Math.max(0, Math.floor(configured));
   }
+}
+
+function defaultCommandExists(command: string): boolean {
+  const binary = command.trim().split(/\s+/)[0];
+  if (!binary) return false;
+
+  const result = spawnSync('sh', ['-lc', `command -v ${shellQuote(binary)} >/dev/null 2>&1`], {
+    stdio: 'ignore',
+  });
+  return result.status === 0;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 function sortCandidates(items: NormalizedWorkItem[]): NormalizedWorkItem[] {

@@ -106,6 +106,44 @@ test('buildContract supports legacy keys and github extension namespace', () => 
   });
 });
 
+
+test('rejects agent-level timeout aliases outside timeouts', () => {
+  const doc: WorkflowDocument = {
+    config: {
+      tracker: {
+        kind: 'github_projects',
+        github: {
+          owner: 'kouka-t0yohei',
+          projectNumber: 123,
+          tokenEnv: 'GITHUB_TOKEN',
+        },
+      },
+      runtime: {
+        pollIntervalMs: 5000,
+      },
+      workspace: {
+        root: './tmp',
+      },
+      agent: {
+        command: 'codex',
+        turn_timeout_ms: 15000,
+      } as Record<string, unknown>,
+    },
+    prompt_template: 'Prompt',
+  };
+
+  assert.throws(
+    () => buildContract(doc),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowContractBuildError);
+      const wrapped = error as WorkflowContractBuildError;
+      assert.match((error as WorkflowContractBuildError).message, /agent\.turn_timeout_ms/);
+      assert.ok(wrapped.validationErrors.some((entry) => entry.code === 'workflow.unknown_key'));
+      return true;
+    },
+  );
+});
+
 test('buildContract surfaces validation errors clearly', () => {
   const doc: WorkflowDocument = {
     config: {
@@ -132,6 +170,83 @@ test('buildContract surfaces validation errors clearly', () => {
 });
 
 
+
+
+test('validateWorkflowContract rejects unknown top-level keys', () => {
+  const doc: WorkflowDocument = {
+    config: {
+      tracker: {
+        kind: 'github_projects',
+        github: {
+          owner: 'kouka-t0yohei',
+          projectNumber: 123,
+          tokenEnv: 'GITHUB_TOKEN',
+        },
+      },
+      runtime: {
+        pollIntervalMs: 30000,
+      },
+      workspace: {
+        root: './tmp',
+      },
+      agent: {
+        command: 'codex',
+      },
+      mystery: 'nope',
+    },
+    prompt_template: 'Prompt',
+  };
+
+  assert.throws(
+    () => buildContract(doc),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowContractBuildError);
+      assert.match((error as WorkflowContractBuildError).message, /mystery/);
+      const wrapped = error as WorkflowContractBuildError;
+      assert.ok(wrapped.validationErrors.some((entry) => entry.code === 'workflow.unknown_key'));
+      return true;
+    },
+  );
+});
+
+
+test('validateWorkflowContract rejects unknown nested keys', () => {
+  const doc: WorkflowDocument = {
+    config: {
+      tracker: {
+        kind: 'github_projects',
+        github: {
+          owner: 'kouka-t0yohei',
+          projectNumber: 123,
+          tokenEnv: 'GITHUB_TOKEN',
+          typoKey: 'bad',
+        },
+      },
+      runtime: {
+        pollIntervalMs: 30000,
+        unknownRetry: 5,
+      },
+      workspace: {
+        root: './tmp',
+      },
+      agent: {
+        command: 'codex',
+      },
+    },
+    prompt_template: 'Prompt',
+  };
+
+  assert.throws(
+    () => buildContract(doc),
+    (error: unknown) => {
+      assert.ok(error instanceof WorkflowContractBuildError);
+      const wrapped = error as WorkflowContractBuildError;
+      assert.match((error as WorkflowContractBuildError).message, /tracker.github.typoKey|runtime.unknownRetry/);
+      assert.ok(wrapped.validationErrors.some((entry) => entry.code === 'workflow.unknown_key'));
+      return true;
+    },
+  );
+});
 
 test('buildContract expands workspace path with HOME and env vars', () => {
   process.env.WORKFLOW_TEST_ROOT = '/var/tmp/symphony-custom';

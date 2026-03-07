@@ -80,7 +80,7 @@ test('spawns codex app-server with deterministic initialize -> thread/turn order
   assert.equal(writes[0].method, 'initialize');
   assert.equal(writes[1].method, 'thread.start');
   assert.equal(writes[2].method, 'turn.start');
-  assert.equal(writes[2].params.message, 'hello codex');
+  assert.equal(writes[2].params.input[0].text, 'hello codex');
 });
 
 test('initialize sends cwd, clientInfo, and capabilities for protocol compatibility', async () => {
@@ -240,7 +240,9 @@ test('continues multi-turn on same thread and uses continuation guidance', async
   assert.ok(result.state.turnsCompleted >= 2);
 
   const writes = fake.writes.map((w) => JSON.parse(w.trim()));
-  const turnMessages = writes.filter((w) => w.method === 'turn.start').map((w) => w.params.message);
+  const turnMessages = writes
+    .filter((w) => w.method === 'turn.start')
+    .map((w) => w.params.input?.[0]?.text);
   assert.deepEqual(turnMessages.slice(0, 2), ['first prompt', 'continue please']);
 
   const threadStart = writes.find((w) => w.method === 'thread.start');

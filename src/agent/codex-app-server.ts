@@ -316,13 +316,13 @@ export class CodexAppServerClient {
 
     // Step 3: Run turns within the thread.
     for (let turn = 1; turn <= this.maxTurns; turn += 1) {
-      const message =
+      const inputMessage =
         turn === 1
           ? params.renderedPrompt
           : (params.continuationGuidance ?? 'Continue from the active issue and finish the task.');
 
-      const turnParams: Record<string, string | number> = {
-        message,
+      const turnParams: Record<string, unknown> = {
+        input: [{ type: 'text', text: inputMessage }],
         turn,
       };
       if (this.state.threadId) {

@@ -10,20 +10,18 @@ as its tracker; this project adapts the same architecture for GitHub Projects.
 
 > **Status:** Engineering preview. Suitable for evaluation in trusted environments.
 
-## Choose your execution option
+## Running Symphony
 
 ### Option 1. Make your own
 
-Tell your favorite coding agent to implement a Symphony runtime in your language from the following spec:
+Tell your favorite coding agent to build Symphony in a programming language of your choice:
 
-- [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md)
-- This repo’s GitHub Projects adaptation: [`SPEC.md`](./SPEC.md)
-
-This is the recommended path if you want full control, custom architecture, or a different runtime stack.
+> Implement Symphony according to the following spec:
+> https://github.com/openai/symphony/blob/main/SPEC.md
 
 ### Option 2. Use our experimental reference implementation
 
-Use this repository as a working reference implementation:
+Check out this project for an example implementation and a ready-to-run adapter for GitHub Projects:
 
 ```bash
 git clone https://github.com/t0yohei/symphony-github-projects.git
@@ -33,8 +31,9 @@ npm run build
 npm start
 ```
 
-You can also start quickly via GitHub Actions workflows (for CI validation / periodic smoke checks) in
-`.github/workflows/ci.yml`.
+You can also use the included GitHub Actions workflow as a smoke-check baseline (`.github/workflows/ci.yml`).
+
+We also keep our GitHub Projects adaptation spec here: [`SPEC.md`](./SPEC.md).
 
 ## How It Works
 

@@ -234,6 +234,50 @@ describe('PollingRuntime state machine', () => {
     assert.equal(runtime.snapshot().retryAttempts.A, 3);
   });
 
+  it('defaults maxRetryBackoffMs to 300000ms', async () => {
+    let now = 0;
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101)];
+    tracker.failMarkInProgressFor.add('A');
+
+    const runtime = new PollingRuntime(tracker, workflow, new FakeLogger(), {
+      ...baseRuntimeOptions,
+      now: () => now,
+      failureRetryBaseDelayMs: 10_000,
+      failureRetryMultiplier: 2,
+    });
+
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 1);
+
+    now += 9_999;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 1);
+
+    now += 1;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 2); // delay=20_000
+
+    now += 19_999;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 2);
+
+    now += 1;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 3); // delay=40_000
+
+    now += 39_999;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 3);
+
+    now += 1;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 4);
+
+    now += 40_000;
+    await runtime.tick();
+    assert.equal(runtime.snapshot().retryAttempts.A, 4); // delay=80_000 at attempt 3, no 30_000 cap in effect
+  });
   it('uses continuation retry after normal worker exit when item is not done', async () => {
     let now = 2_000;
     const tracker = new FakeTracker();

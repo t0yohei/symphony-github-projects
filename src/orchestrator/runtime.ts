@@ -95,7 +95,7 @@ const DEFAULT_CONTINUATION_RETRY_DELAY_MS = 1_000;
 /** Failure retry base delay per spec: min(10000 * 2^(attempt-1), max_retry_backoff_ms) */
 const DEFAULT_FAILURE_RETRY_BASE_DELAY_MS = 10_000;
 const DEFAULT_FAILURE_RETRY_MULTIPLIER = 2;
-const DEFAULT_FAILURE_RETRY_MAX_DELAY_MS = 60_000;
+const DEFAULT_FAILURE_RETRY_MAX_DELAY_MS = 300_000;
 
 /**
  * Error thrown when required workflow config fields are missing or invalid.

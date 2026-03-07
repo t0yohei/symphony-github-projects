@@ -718,12 +718,16 @@ function sortCandidates(items: NormalizedWorkItem[]): NormalizedWorkItem[] {
     const pb = b.priority ?? Number.MAX_SAFE_INTEGER;
     if (pa !== pb) return pa - pb;
 
-    const ua = Date.parse(a.updated_at ?? a.updatedAt ?? '');
-    const ub = Date.parse(b.updated_at ?? b.updatedAt ?? '');
-    const uaSafe = Number.isNaN(ua) ? Number.MAX_SAFE_INTEGER : ua;
-    const ubSafe = Number.isNaN(ub) ? Number.MAX_SAFE_INTEGER : ub;
-    if (uaSafe !== ubSafe) return uaSafe - ubSafe;
+    const ca = Date.parse(a.created_at ?? '');
+    const cb = Date.parse(b.created_at ?? '');
+    const caSafe = Number.isNaN(ca) ? Number.MAX_SAFE_INTEGER : ca;
+    const cbSafe = Number.isNaN(cb) ? Number.MAX_SAFE_INTEGER : cb;
+    if (caSafe !== cbSafe) return caSafe - cbSafe;
 
-    return (a.number ?? Number.MAX_SAFE_INTEGER) - (b.number ?? Number.MAX_SAFE_INTEGER);
+    const ia = a.identifier ?? '';
+    const ib = b.identifier ?? '';
+    if (ia !== ib) return ia.localeCompare(ib);
+
+    return 0;
   });
 }

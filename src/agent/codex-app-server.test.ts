@@ -313,3 +313,139 @@ test('classifies rate limit errors from stderr', async () => {
   assert.equal(result.status, 'rate_limited');
   assert.match(result.errorMessage ?? '', /rate limit/i);
 });
+
+test('snapshot includes runtimeSeconds greater than zero after run completes', async () => {
+  const fake = new FakeChildProcess();
+  const client = new CodexAppServerClient({
+    cwd: '/tmp/workspace',
+    readTimeoutMs: 10,
+    stallTimeoutMs: 500,
+    spawn: () => {
+      queueMicrotask(() => {
+        fake.emitStdoutJson({ method: 'initialized' });
+        fake.emitStdoutJson({
+          params: { turn: { completed: true, active_issue: false } },
+        });
+      });
+      return fake;
+    },
+  });
+
+  const result = await client.run({ renderedPrompt: 'runtime test' });
+
+  assert.equal(result.status, 'completed');
+  assert.ok(
+    typeof result.state.runtimeSeconds === 'number' && result.state.runtimeSeconds >= 0,
+    `runtimeSeconds should be a non-negative number, got ${result.state.runtimeSeconds}`,
+  );
+});
+
+test('snapshot runtimeSeconds reflects elapsed time on stall', async () => {
+  const fake = new FakeChildProcess();
+  const client = new CodexAppServerClient({
+    cwd: '/tmp/workspace',
+    readTimeoutMs: 5,
+    stallTimeoutMs: 30,
+    turnTimeoutMs: 500,
+    spawn: () => fake,
+  });
+
+  const before = Date.now();
+  const result = await client.run({ renderedPrompt: 'will stall for timing' });
+  const after = Date.now();
+
+  assert.equal(result.status, 'stalled');
+  // runtimeSeconds should be between 0 and the total elapsed wall time.
+  const elapsedSeconds = (after - before) / 1000;
+  assert.ok(
+    result.state.runtimeSeconds >= 0 && result.state.runtimeSeconds <= elapsedSeconds + 0.1,
+    `runtimeSeconds (${result.state.runtimeSeconds}) out of expected range [0, ${elapsedSeconds + 0.1}]`,
+  );
+});
+
+test('snapshot runtimeSeconds reflects elapsed time on turn timeout', async () => {
+  const fake = new FakeChildProcess();
+  const client = new CodexAppServerClient({
+    cwd: '/tmp/workspace',
+    readTimeoutMs: 5,
+    stallTimeoutMs: 60_000,
+    turnTimeoutMs: 40,
+    spawn: () => {
+      // Emit initialized but no turn completion — triggers turn timeout.
+      queueMicrotask(() => {
+        fake.emitStdoutJson({ method: 'initialized' });
+        // Emit periodic events to keep stall timer alive, but never complete.
+        const interval = setInterval(() => {
+          fake.emitStdoutJson({ method: 'ping' });
+        }, 5);
+        setTimeout(() => clearInterval(interval), 200);
+      });
+      return fake;
+    },
+  });
+
+  const before = Date.now();
+  const result = await client.run({ renderedPrompt: 'will timeout' });
+  const after = Date.now();
+
+  assert.equal(result.status, 'timeout');
+  const elapsedSeconds = (after - before) / 1000;
+  assert.ok(
+    result.state.runtimeSeconds >= 0 && result.state.runtimeSeconds <= elapsedSeconds + 0.1,
+    `runtimeSeconds (${result.state.runtimeSeconds}) out of expected range [0, ${elapsedSeconds + 0.1}]`,
+  );
+});
+
+test('snapshot records latestRateLimitAt when rate_limited event is observed', async () => {
+  const fake = new FakeChildProcess();
+  const beforeRun = Date.now();
+
+  const client = new CodexAppServerClient({
+    cwd: '/tmp/workspace',
+    readTimeoutMs: 10,
+    stallTimeoutMs: 1000,
+    turnTimeoutMs: 1000,
+    spawn: () => {
+      queueMicrotask(() => {
+        fake.emitStdoutJson({ method: 'initialized' });
+        fake.emitStdoutJson({ params: { rate_limited: true, error: { message: 'rate limited' } } });
+      });
+      return fake;
+    },
+  });
+
+  const result = await client.run({ renderedPrompt: 'rate limit tracking' });
+
+  assert.equal(result.status, 'rate_limited');
+  assert.ok(
+    typeof result.state.latestRateLimitAt === 'number',
+    'latestRateLimitAt should be set when rate_limited event is received',
+  );
+  assert.ok(
+    (result.state.latestRateLimitAt ?? 0) >= beforeRun,
+    'latestRateLimitAt should be >= the time before the run started',
+  );
+});
+
+test('snapshot latestRateLimitAt is undefined when no rate limit occurred', async () => {
+  const fake = new FakeChildProcess();
+  const client = new CodexAppServerClient({
+    cwd: '/tmp/workspace',
+    readTimeoutMs: 10,
+    stallTimeoutMs: 500,
+    spawn: () => {
+      queueMicrotask(() => {
+        fake.emitStdoutJson({ method: 'initialized' });
+        fake.emitStdoutJson({
+          params: { turn: { completed: true, active_issue: false } },
+        });
+      });
+      return fake;
+    },
+  });
+
+  const result = await client.run({ renderedPrompt: 'no rate limit' });
+
+  assert.equal(result.status, 'completed');
+  assert.equal(result.state.latestRateLimitAt, undefined);
+});

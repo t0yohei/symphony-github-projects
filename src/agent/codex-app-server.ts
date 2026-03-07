@@ -15,6 +15,10 @@ export interface CodexSessionState {
   turnsStarted: number;
   turnsCompleted: number;
   usage: CodexUsageCounters;
+  /** Elapsed wall-clock time in seconds from when run() was called to the most recent snapshot. */
+  runtimeSeconds: number;
+  /** Unix timestamp (ms) of the most recent rate-limit signal, or undefined if none was observed. */
+  latestRateLimitAt?: number;
 }
 
 export interface CodexTurnResult {
@@ -69,9 +73,31 @@ type SpawnLike = (
   },
 ) => ChildProcessLike;
 
+/**
+ * Default maximum number of agent turns per run().
+ * Aligns with Symphony SPEC multi-turn contract: agents may need up to 3 turns
+ * for complex tasks while keeping per-issue resource usage bounded.
+ */
 const DEFAULT_MAX_TURNS = 3;
+
+/**
+ * Default per-turn wall-clock timeout (ms).
+ * Matches the WORKFLOW.md hooks.timeout_ms recommendation (120 s).
+ * Raise for exceptionally long-running code generation tasks.
+ */
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
+
+/**
+ * Default read (poll) interval for the completion-wait loop (ms).
+ * Low enough to detect completion promptly; not so low as to busy-spin.
+ */
 const DEFAULT_READ_TIMEOUT_MS = 10_000;
+
+/**
+ * Default stall timeout (ms): time since the last stdout/stderr event before
+ * the turn is considered hung. 30 s gives the agent headroom for slow model
+ * responses while still bounding deadlock scenarios.
+ */
 const DEFAULT_STALL_TIMEOUT_MS = 30_000;
 
 /** Format the thread title as "<identifier>: <title>" when both are provided. */
@@ -92,7 +118,12 @@ export class CodexAppServerClient {
       outputTokens: 0,
       totalTokens: 0,
     },
+    runtimeSeconds: 0,
+    latestRateLimitAt: undefined,
   };
+
+  /** Timestamp (ms) when run() was invoked; set at the start of each run. */
+  private runStartedAt: number | undefined;
 
   private readonly maxTurns: number;
   private readonly turnTimeoutMs: number;
@@ -120,6 +151,8 @@ export class CodexAppServerClient {
   }
 
   async run(params: RunTurnParams): Promise<CodexTurnResult> {
+    this.runStartedAt = Date.now();
+
     const child = this.spawnProc(this.command, this.args, {
       cwd: this.options.cwd,
       env: {
@@ -404,9 +437,24 @@ export class CodexAppServerClient {
     } else {
       this.state.usage.totalTokens = this.state.usage.inputTokens + this.state.usage.outputTokens;
     }
+
+    // Track the most recent rate-limit signal for reporting/backoff consumers.
+    const rateLimited = readBoolean(event, [
+      'params.rate_limited',
+      'rate_limited',
+      'error.rate_limited',
+    ]);
+    if (rateLimited) {
+      this.state.latestRateLimitAt = Date.now();
+    }
   }
 
   private snapshotState(): CodexSessionState {
+    const runtimeSeconds =
+      this.runStartedAt !== undefined
+        ? (Date.now() - this.runStartedAt) / 1000
+        : 0;
+
     return {
       sessionId: this.state.sessionId,
       threadId: this.state.threadId,
@@ -418,6 +466,8 @@ export class CodexAppServerClient {
         outputTokens: this.state.usage.outputTokens,
         totalTokens: this.state.usage.totalTokens,
       },
+      runtimeSeconds,
+      latestRateLimitAt: this.state.latestRateLimitAt,
     };
   }
 }

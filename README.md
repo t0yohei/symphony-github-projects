@@ -10,6 +10,34 @@ as its tracker; this project adapts the same architecture for GitHub Projects.
 
 > **Status:** Engineering preview. Suitable for evaluation in trusted environments.
 
+## Running Symphony for GitHub Projects
+
+### Option 1. Make your own
+
+Tell your favorite coding agent to build Symphony for GitHub Projects in a programming language of your choice:
+
+> Implement Symphony for GitHub Projects according to the following spec:
+> https://github.com/t0yohei/symphony-github-projects/blob/main/SPEC.md
+
+### Option 2. Use our experimental reference implementation
+
+Check out this repository as an experimental reference implementation and start with:
+
+```bash
+git clone https://github.com/t0yohei/symphony-github-projects.git
+cd symphony-github-projects
+npm install
+npm run build
+npm start
+```
+
+You can also ask a coding agent to help with setup:
+
+> Set up Symphony for GitHub Projects for my repository based on
+> https://github.com/t0yohei/symphony-github-projects/blob/main/SPEC.md
+
+You can use the included GitHub Actions workflow as a smoke-check baseline (`.github/workflows/ci.yml`).
+
 ## How It Works
 
 ```
@@ -48,7 +76,7 @@ npm install
 
 ### 2. Set environment variables
 
-Following the [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md), configuration
+Following this repo's [SPEC](./SPEC.md), configuration
 values are resolved from runtime environment variables — not from `.env` files. Set them in your
 shell before starting the service:
 

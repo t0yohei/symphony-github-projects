@@ -178,6 +178,9 @@ This repo now includes a lightweight observability dashboard inspired by Symphon
 It is served directly by the Node process and polls local runtime state every 5 seconds.
 
 ```bash
+npm run dev:dashboard
+
+# or run explicitly
 npm run build
 node dist/cli.js --workflow WORKFLOW.md --dashboard-port 4318
 # optional: expose on a specific interface

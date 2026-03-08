@@ -15,7 +15,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "npm run build && node --test dist/**/*.test.js",
-    "start": "node dist/cli.js"
+    "start": "node dist/cli.js",
+    "dev:dashboard": "npm run build && node dist/cli.js --workflow WORKFLOW.md --dashboard-port 4318"
   },
   "engines": {
     "node": ">=20"

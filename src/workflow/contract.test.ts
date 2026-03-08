@@ -85,9 +85,9 @@ test('buildContract supports legacy keys and github extension namespace', () => 
       },
       agent: {
         command: 'codex',
-      },
-      hooks: {
-        timeout_ms: 45000,
+        timeouts: {
+          hooks_timeout_ms: 45000,
+        },
       },
       extensions: {
         github_projects: {

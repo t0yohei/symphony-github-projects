@@ -201,8 +201,9 @@ Current dashboard scope:
 - retry queue
 - latest rate-limit snapshot
 
-`dev:dashboard:open` forwards `Ctrl+C` to the underlying CLI process so the dashboard shuts down
-cleanly instead of leaving the child `node dist/cli.js` process behind.
+`dev:dashboard:open` forwards `Ctrl+C` to the underlying CLI process and escalates shutdown in
+stages (`SIGINT` → `SIGTERM` → `SIGKILL`) if the child refuses to exit, so the dashboard is much
+less likely to leave the `node dist/cli.js` process behind.
 
 ## WORKFLOW.md Reference
 

@@ -89,6 +89,27 @@ export GITHUB_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxx"
 The `WORKFLOW.md` front matter references these variables with `$VAR_NAME` syntax (e.g.
 `tokenEnv: GITHUB_TOKEN`). The config resolver reads them from `process.env` at startup.
 
+#### Recommended GitHub token permissions
+
+If you use a fine-grained personal access token, scope it to the target repository (and the owning
+user/org project, if applicable).
+
+**Tracker-only mode** (read/update GitHub Projects state only):
+- Projects: **Read and write**
+- Metadata: **Read-only**
+- Issues: **Read-only**
+
+**Implementation mode** (same token also pushes code and opens PRs):
+- Projects: **Read and write**
+- Metadata: **Read-only**
+- Issues: **Read and write**
+- Contents: **Read and write**
+- Pull requests: **Read and write**
+
+If your workflow only reads issue metadata and never comments on issues, `Issues: Read-only` is
+usually enough. If your hooks clone private repositories or your agent pushes branches / opens pull
+requests, use the implementation-mode set above.
+
 ### 3. Create your WORKFLOW.md
 
 Copy the example and customize it for your project:
@@ -96,6 +117,10 @@ Copy the example and customize it for your project:
 ```bash
 cp examples/WORKFLOW.md ./WORKFLOW.md
 ```
+
+By default, the repo ignores `WORKFLOW.md` in `.gitignore` so your local runtime configuration does
+not get committed accidentally. If you do want to version-control your workflow file, remove the
+`WORKFLOW.md` entry from `.gitignore` first.
 
 A minimal `WORKFLOW.md`:
 
@@ -112,7 +137,6 @@ workspace:
   root: ~/symphony-workspaces
 
 hooks:
-  timeout_ms: 120000
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
     npm install
@@ -120,6 +144,8 @@ hooks:
 agent:
   command: codex app-server
   max_turns: 20
+  timeouts:
+    hooks_timeout_ms: 120000
 
 extensions:
   github_projects:
@@ -150,6 +176,33 @@ npm start
 node dist/cli.js
 ```
 
+### 5. Launch the local Web UI dashboard
+
+This repo now includes a lightweight observability dashboard inspired by Symphony's Elixir dashboard.
+It is served directly by the Node process and polls local runtime state every 5 seconds.
+
+```bash
+npm run dev:dashboard
+
+# build + launch + open the dashboard in your default browser (macOS)
+npm run dev:dashboard:open
+
+# or run explicitly
+npm run build
+node dist/cli.js --workflow WORKFLOW.md --dashboard-port 4318
+# optional: expose on a specific interface
+node dist/cli.js --workflow WORKFLOW.md --dashboard-port 4318 --dashboard-host 0.0.0.0
+```
+
+Then open <http://127.0.0.1:4318>.
+
+Current dashboard scope:
+- summary metrics
+- workflow metadata
+- running session list
+- retry queue
+- latest rate-limit snapshot
+
 ## WORKFLOW.md Reference
 
 The `WORKFLOW.md` file is the single source of truth for orchestrator behavior. It is designed
@@ -165,7 +218,9 @@ Core contract (canonical):
 - `workspace.root`
 - `agent.command`, `agent.args`, `agent.max_turns`
 - `agent.timeouts.{turn_timeout_ms,read_timeout_ms,stall_timeout_ms,hooks_timeout_ms}`
-- `hooks.{after_create,before_run,after_run,before_remove,timeout_ms}`
+- `hooks.{after_create,before_run,after_run,before_remove}`
+
+Legacy note: older examples may show `hooks.timeout_ms`, but the supported location for hook timeout configuration is `agent.timeouts.hooks_timeout_ms`.
 
 GitHub Projects extension namespace:
 

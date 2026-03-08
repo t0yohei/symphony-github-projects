@@ -85,6 +85,9 @@ test('buildContract supports legacy keys and github extension namespace', () => 
       },
       agent: {
         command: 'codex',
+        timeouts: {
+          hooks_timeout_ms: 45000,
+        },
       },
       extensions: {
         github_projects: {
@@ -101,6 +104,7 @@ test('buildContract supports legacy keys and github extension namespace', () => 
   assert.equal(contract.runtime.pollIntervalMs, 8000);
   assert.equal(contract.workspace.root, './legacy/workspaces');
   assert.equal(contract.tracker.github.tokenEnv, 'LEGACY_TOKEN');
+  assert.equal(contract.agent.timeouts?.hooksTimeoutMs, 45000);
   assert.deepEqual(contract.extensions?.github_projects, {
     custom_field_map: { estimate: 'Story Points' },
   });

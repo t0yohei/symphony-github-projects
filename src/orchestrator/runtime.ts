@@ -29,6 +29,7 @@ export interface RuntimeObservationContext {
   sessionId?: string;
   usage?: Partial<RuntimeUsageTotals>;
   rateLimit?: RuntimeRateLimitSnapshot;
+  activeIssue?: boolean;
 }
 
 export interface RuntimeStateSnapshot {
@@ -67,6 +68,8 @@ interface RetryEntry {
   timer?: ReturnType<typeof setTimeout>;
   error?: string;
   kind: 'continuation' | 'failure';
+  activeIssue?: boolean;
+  sourceReason?: string;
 }
 
 export interface PollingRuntimeOptions {
@@ -291,8 +294,10 @@ export class PollingRuntime implements OrchestratorRuntime {
 
     let dispatched = 0;
     const capacity = Math.max(0, maxConcurrency - this.resolveOccupiedSlots());
+    const pendingFailureRetries = [...this.retry.values()].filter((entry) => entry.kind === 'failure').length;
+    const capacityForNewDispatches = Math.max(0, capacity - Math.min(capacity, pendingFailureRetries));
     for (const item of dispatchable) {
-      if (dispatched >= capacity) break;
+      if (dispatched >= capacityForNewDispatches) break;
 
       if (todoBlockedByNonTerminal.has(item.id)) {
         this.logger.info('runtime.dispatch.skipped.todo_blocked', {
@@ -325,6 +330,7 @@ export class PollingRuntime implements OrchestratorRuntime {
       eligibleCount: candidates.length,
       dispatchableCount: dispatchable.length,
       dispatched,
+      reservedForFailureRetries: Math.min(capacity, pendingFailureRetries),
       runningCount: this.running.size,
       claimedCount: this.claimed.size,
       retryCount: this.retry.size,
@@ -427,9 +433,23 @@ export class PollingRuntime implements OrchestratorRuntime {
         return;
       }
 
-      // Normal worker exit follows continuation retry semantics first, even when
-      // explicit mark-done-on-completion behavior is enabled.
-      this.scheduleRetry(entry.item, 'continuation', 'worker_exit_completed');
+      if (context?.activeIssue !== true) {
+        if (!this.shouldMarkDoneOnCompletion()) {
+          this.clearRetry(itemId);
+          this.logger.info('runtime.transition.completed_without_continuation', {
+            issue_id: entry.item.id,
+            issue_identifier: entry.item.identifier,
+            session_id: entry.sessionId,
+          });
+          return;
+        }
+      }
+
+      // Only continue when the worker explicitly reports an active unresolved issue,
+      // or when the workflow requires a done transition attempt.
+      this.scheduleRetry(entry.item, 'continuation', 'worker_exit_completed', undefined, undefined, {
+        activeIssue: context?.activeIssue,
+      });
 
       if (!this.shouldMarkDoneOnCompletion()) {
         return;
@@ -697,7 +717,32 @@ export class PollingRuntime implements OrchestratorRuntime {
     const entry = this.retry.get(itemId);
     if (!entry) return;
 
+    this.logger.info('runtime.transition.retry_fire_enter', {
+      issue_id: entry.issueId,
+      issue_identifier: entry.identifier,
+      retry_kind: entry.kind,
+      retry_attempt: entry.attempt,
+      due_at: new Date(entry.dueAt).toISOString(),
+      active_issue: entry.activeIssue,
+      source_reason: entry.sourceReason,
+      running: this.running.has(itemId),
+      completed: this.completed.has(itemId),
+      claimed: this.claimed.has(itemId),
+    });
+
     if (this.completed.has(itemId) || this.running.has(itemId)) {
+      this.clearRetry(itemId);
+      return;
+    }
+
+    if (this.claimed.has(itemId)) {
+      this.logger.info('runtime.transition.retry_fire_ignored_claimed', {
+        issue_id: entry.issueId,
+        issue_identifier: entry.identifier,
+        retry_kind: entry.kind,
+        retry_attempt: entry.attempt,
+        source_reason: entry.sourceReason,
+      });
       this.clearRetry(itemId);
       return;
     }
@@ -713,13 +758,18 @@ export class PollingRuntime implements OrchestratorRuntime {
     const capacity = Math.max(0, maxConcurrency - this.resolveOccupiedSlots());
     if (capacity <= 0) {
       this.claimed.delete(itemId);
-      const noSlotDelayMs = Math.max(this.continuationRetryDelayMs * 5, 5_000);
+      const retryKind = entry.kind;
+      const noSlotDelayMs = Math.max(
+        retryKind === 'continuation' ? this.continuationRetryDelayMs * 5 : this.failureRetryBaseDelayMs,
+        5_000,
+      );
       this.scheduleRetry(
         eligible,
-        'continuation',
+        retryKind,
         'retry_fire_no_slot',
         `no dispatch slot available (occupied=${this.resolveOccupiedSlots()}, max=${maxConcurrency})`,
         noSlotDelayMs,
+        { activeIssue: entry.activeIssue },
       );
       return;
     }
@@ -729,9 +779,11 @@ export class PollingRuntime implements OrchestratorRuntime {
         this.claimed.delete(itemId);
         this.scheduleRetry(
           eligible,
-          'continuation',
+          entry.kind,
           'retry_fire_state_capacity',
           `per-state concurrency limit reached for state=${eligible.state}`,
+          undefined,
+          { activeIssue: entry.activeIssue },
         );
         return;
       }
@@ -742,9 +794,11 @@ export class PollingRuntime implements OrchestratorRuntime {
     this.claimed.delete(itemId);
     this.scheduleRetry(
       eligible,
-      'continuation',
+      entry.kind,
       'retry_fire_blocked_by_non_terminal',
       `item is blocked by a non-terminal dependency`,
+      undefined,
+      { activeIssue: entry.activeIssue },
     );
   }
 
@@ -867,6 +921,7 @@ export class PollingRuntime implements OrchestratorRuntime {
 
     return {
       sessionId: result.state.sessionId,
+      activeIssue: result.activeIssue,
       usage: {
         inputTokens: result.state.usage.inputTokens,
         outputTokens: result.state.usage.outputTokens,
@@ -962,6 +1017,7 @@ export class PollingRuntime implements OrchestratorRuntime {
     reason: string,
     error?: string,
     overrideDelayMs?: number,
+    metadata?: { activeIssue?: boolean },
   ): void {
     const itemId = item.id;
     const current = this.retry.get(itemId);
@@ -999,6 +1055,8 @@ export class PollingRuntime implements OrchestratorRuntime {
       timer,
       error,
       kind,
+      activeIssue: metadata?.activeIssue,
+      sourceReason: reason,
     };
 
     this.retry.set(itemId, next);
@@ -1008,6 +1066,7 @@ export class PollingRuntime implements OrchestratorRuntime {
       reason,
       retry_attempt: next.attempt,
       due_at: new Date(next.dueAt).toISOString(),
+      active_issue: next.activeIssue,
       nextEligibleInMs: delay,
       kind,
       error,

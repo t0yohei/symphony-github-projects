@@ -182,6 +182,54 @@ test('thread/start includes formatted title and cwd for a new thread', async () 
   assert.equal(threadStart.params.cwd, '/tmp/workspace');
   assert.equal(threadStart.params.experimentalRawEvents, false);
   assert.equal(threadStart.params.persistExtendedHistory, false);
+  assert.equal(threadStart.params.approvalPolicy, 'never');
+  assert.equal(threadStart.params.sandbox, 'workspace-write');
+  assert.deepEqual(threadStart.params.config, {
+    sandbox_workspace_write: {
+      writable_roots: ['/tmp/workspace'],
+      network_access: true,
+      exclude_tmpdir_env_var: false,
+      exclude_slash_tmp: false,
+    },
+  });
+});
+
+test('uses danger-full-access sandbox when requested via command', async () => {
+  const fake = new FakeChildProcess();
+
+  const client = new CodexAppServerClient({
+    cwd: '/tmp/workspace',
+    command: 'codex -s danger-full-access -a never app-server',
+    readTimeoutMs: 10,
+    stallTimeoutMs: 500,
+    spawn: () => {
+      const timer = setInterval(() => {
+        const writes = fake.writes.map((w) => JSON.parse(w.trim()));
+        if (!writes.some((w) => w.method === 'initialize')) return;
+        if (!writes.some((w) => w.method === 'initialized')) {
+          fake.emitStdoutJson({ id: 1, result: { userAgent: 'diag/0.110.0' } });
+          return;
+        }
+        if (!writes.some((w) => w.method === 'thread/start')) return;
+        if (!writes.some((w) => w.method === 'turn/start')) {
+          fake.emitStdoutJson({ id: 2, result: { thread: { id: 't1' } } });
+          return;
+        }
+        fake.emitStdoutJson({ id: 3, result: { turn: { id: 'turn-1' } } });
+        fake.emitStdoutJson({ method: 'turn/completed', params: { threadId: 't1', turn: { id: 'turn-1' } } });
+        clearInterval(timer);
+      }, 1);
+      return fake;
+    },
+  });
+
+  await client.run({ renderedPrompt: 'danger test' });
+
+  const writes = fake.writes.map((w) => JSON.parse(w.trim()));
+  const threadStart = writes.find((w) => w.method === 'thread/start');
+  assert.ok(threadStart, 'thread/start must be sent');
+  assert.equal(threadStart.params.sandbox, 'danger-full-access');
+  assert.equal(threadStart.params.config, undefined);
 });
 
 test('detects cancelled turn and returns cancelled status', async () => {

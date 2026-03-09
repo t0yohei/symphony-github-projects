@@ -334,7 +334,7 @@ describe('PollingRuntime state machine', () => {
     await runtime.tick();
     assert.equal(runtime.snapshot().retryAttempts.A, 4); // delay=80_000 at attempt 3, no 30_000 cap in effect
   });
-  it('uses continuation retry after normal worker exit when item is not done', async () => {
+  it('uses continuation retry after normal worker exit when active issue remains', async () => {
     let now = 2_000;
     const tracker = new FakeTracker();
     tracker.items = [item('A', 101)];
@@ -348,7 +348,7 @@ describe('PollingRuntime state machine', () => {
     });
 
     await runtime.tick();
-    await runtime.handleWorkerExit('A', 'completed');
+    await runtime.handleWorkerExit('A', 'completed', { activeIssue: true });
 
     assert.equal(runtime.snapshot().running.length, 0);
     assert.equal(runtime.snapshot().retryAttempts.A, 1);
@@ -360,6 +360,26 @@ describe('PollingRuntime state machine', () => {
     await runtime.tick();
     assert.equal(tracker.markInProgressCalls.length, 2);
     assert.deepEqual(runtime.snapshot().running, ['A']);
+  });
+
+  it('does not schedule continuation retry after normal worker exit when active issue is false', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101)];
+    tracker.states.A = 'in_progress';
+
+    const logger = new FakeLogger();
+    const runtime = new PollingRuntime(tracker, workflow, logger, {
+      ...baseRuntimeOptions,
+      continuationRetryDelayMs: 100,
+      failureRetryBaseDelayMs: 1000,
+    });
+
+    await runtime.tick();
+    await runtime.handleWorkerExit('A', 'completed', { activeIssue: false });
+
+    assert.equal(runtime.snapshot().running.length, 0);
+    assert.equal(runtime.snapshot().retryAttempts.A ?? 0, 0);
+    assert.ok(logger.infoLogs.some((log) => log.message === 'runtime.transition.completed_without_continuation'));
   });
 
   it('backs off continuation retry when no dispatch slot is available', async () => {
@@ -392,7 +412,7 @@ describe('PollingRuntime state machine', () => {
     );
 
     await runtime.tick();
-    await runtime.handleWorkerExit('A', 'completed');
+    await runtime.handleWorkerExit('A', 'completed', { activeIssue: true });
     assert.equal(runtime.snapshot().retryAttempts.A, 1);
 
     (runtime as unknown as {
@@ -414,6 +434,131 @@ describe('PollingRuntime state machine', () => {
     assert.equal(retry?.kind, 'continuation');
     assert.equal(retry?.dueAt, now + 5_000);
     assert.equal(tracker.markInProgressCalls.length, 1);
+  });
+
+  it('reserves capacity for pending failure retries before dispatching new work', async () => {
+    let now = 7_000;
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101), item('B', 102), item('C', 103)];
+    tracker.states.A = 'in_progress';
+    tracker.states.B = 'in_progress';
+    tracker.states.C = 'todo';
+
+    const runtime = new PollingRuntime(
+      tracker,
+      {
+        ...workflow,
+        runtime: {
+          ...workflow.runtime,
+          maxConcurrency: 2,
+        },
+        polling: {
+          ...workflow.polling,
+          maxConcurrency: 2,
+        },
+      },
+      new FakeLogger(),
+      {
+        ...baseRuntimeOptions,
+        now: () => now,
+        continuationRetryDelayMs: 100,
+        failureRetryBaseDelayMs: 1000,
+      },
+    );
+
+    await runtime.tick();
+    await runtime.handleWorkerExit('A', 'failed');
+    assert.equal(runtime.snapshot().retryAttempts.A, 1);
+
+    (runtime as unknown as {
+      running: Map<string, { item: NormalizedWorkItem; startedAt: number; lastEventAt: number; workspacePath: string; worker?: { run: () => Promise<unknown>; cancel?: () => void } }>;
+    }).running.set('B', {
+      item: item('B', 102),
+      startedAt: now,
+      lastEventAt: now,
+      workspacePath: '/tmp/B',
+      worker: { run: async () => ({ status: 'completed', state: { usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } } }) },
+    });
+
+    await runtime.tick();
+
+    assert.equal(runtime.snapshot().running.includes('C'), false);
+    assert.equal(tracker.markInProgressCalls.includes('C'), false);
+  });
+
+  it('ignores retry fire when the item is already claimed', async () => {
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101)];
+    tracker.states.A = 'in_progress';
+
+    const logger = new FakeLogger();
+    const runtime = new PollingRuntime(tracker, workflow, logger, {
+      ...baseRuntimeOptions,
+      continuationRetryDelayMs: 100,
+      failureRetryBaseDelayMs: 1000,
+    });
+
+    await runtime.tick();
+    await runtime.handleWorkerExit('A', 'failed');
+
+    (runtime as unknown as { claimed: Set<string> }).claimed.add('A');
+    await (runtime as unknown as { onRetryFire: (itemId: string) => Promise<void> }).onRetryFire('A');
+
+    assert.equal((runtime as unknown as { retry: Map<string, unknown> }).retry.has('A'), false);
+    assert.ok(logger.infoLogs.some((log) => log.message === 'runtime.transition.retry_fire_ignored_claimed'));
+  });
+
+  it('preserves failure retry kind when no dispatch slot is available', async () => {
+    let now = 6_000;
+    const tracker = new FakeTracker();
+    tracker.items = [item('A', 101), item('B', 102)];
+    tracker.states.A = 'in_progress';
+    tracker.states.B = 'in_progress';
+
+    const runtime = new PollingRuntime(
+      tracker,
+      {
+        ...workflow,
+        runtime: {
+          ...workflow.runtime,
+          maxConcurrency: 1,
+        },
+        polling: {
+          ...workflow.polling,
+          maxConcurrency: 1,
+        },
+      },
+      new FakeLogger(),
+      {
+        ...baseRuntimeOptions,
+        now: () => now,
+        continuationRetryDelayMs: 100,
+        failureRetryBaseDelayMs: 1000,
+      },
+    );
+
+    await runtime.tick();
+    await runtime.handleWorkerExit('A', 'failed');
+    assert.equal(runtime.snapshot().retryAttempts.A, 1);
+
+    (runtime as unknown as {
+      running: Map<string, { item: NormalizedWorkItem; startedAt: number; lastEventAt: number; workspacePath: string; worker?: { run: () => Promise<unknown>; cancel?: () => void } }>;
+    }).running.set('B', {
+      item: item('B', 102),
+      startedAt: now,
+      lastEventAt: now,
+      workspacePath: '/tmp/B',
+      worker: { run: async () => ({ status: 'completed', state: { usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 } } }) },
+    });
+
+    now += 1_001;
+    await runtime.tick();
+
+    const retry = (runtime as unknown as { retry: Map<string, { dueAt: number; attempt: number; kind: 'continuation' | 'failure' }> }).retry.get('A');
+    assert.ok(retry);
+    assert.equal(retry?.attempt, 2);
+    assert.equal(retry?.kind, 'failure');
+    assert.equal(retry?.dueAt, now + 5_000);
   });
 
   it('resets continuation attempt counter after failure retry context', async () => {
@@ -440,7 +585,7 @@ describe('PollingRuntime state machine', () => {
       kind: 'failure',
     });
 
-    await runtime.handleWorkerExit('A', 'completed');
+    await runtime.handleWorkerExit('A', 'completed', { activeIssue: true });
     assert.equal(runtime.snapshot().retryAttempts.A, 1);
   });
 

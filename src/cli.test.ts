@@ -1,4 +1,10 @@
 import test from 'node:test';
+
+async function flushAsync(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
 import assert from 'node:assert/strict';
 import type { LoadedWorkflowContract } from './workflow/contract.js';
 import type { Logger } from './logging/logger.js';
@@ -281,10 +287,12 @@ test('startService starts tick loop and can stop', async () => {
 
   for (let i = 0; i < 3; i += 1) {
     clock.runNext();
+    await flushAsync();
   }
 
   assert.equal(runtime.tickCalls, 3);
-  assert.equal(clock.delays.includes(8), true);
+  assert.equal(clock.delays.includes(0), true);
+  assert.equal(clock.delays.includes(1000), true);
 
   handle.stop();
   const beforeStop = runtime.tickCalls;
@@ -321,10 +329,12 @@ test('startService applies new workflow config on hot reload', async () => {
   });
 
   clock.runNext();
-  assert.equal(runtime.applyCalls, 0);
+  await flushAsync();
+  assert.equal(runtime.applyCalls, 1);
 
   reloader!.triggerReload(reloaded);
-  assert.equal(runtime.applyCalls, 1);
+  await flushAsync();
+  assert.equal(runtime.applyCalls, 2);
   assert.ok(runtime.lastAppliedContract);
   assert.equal(runtime.lastAppliedContract?.polling.intervalMs, 5);
 
@@ -360,10 +370,47 @@ test('runtime.tick errors are logged and service keeps ticking', async () => {
   });
 
   clock.runNext();
+  await flushAsync();
   clock.runNext();
+  await flushAsync();
 
   assert.equal(runtime.tickCalls, 2);
   assert.equal(logger.getMessagesFor('runtime.tick.failed').length, 1);
+
+  handle.stop();
+});
+
+test('backs off next tick after tracker rate limit failure', async () => {
+  const runtime = new FakeRuntime(async () => {
+    throw new Error('GraphQL errors: API rate limit already exceeded for user ID 261699157.');
+  });
+  const logger = new CapturingLogger();
+  const workflow = baseWorkflow(5_000);
+  const clock = new FakeClock();
+
+  const handle = await startService({ workflowPath: 'WORKFLOW.md' }, {
+    logger,
+    bootstrap: async () => ({
+      workflow,
+      runtime,
+      logger,
+    }),
+    reloaderFactory: ({ onReload }) => ({
+      start: () => onReload(workflow),
+      stop: () => undefined,
+    }),
+    setTimeoutFn: clock.setTimeout as unknown as typeof setTimeout,
+    clearTimeoutFn: clock.clearTimeout as unknown as typeof clearTimeout,
+    installSignalHandlers: false,
+  });
+
+  clock.runNext();
+  await flushAsync();
+
+  assert.equal(runtime.tickCalls, 1);
+  assert.equal(logger.getMessagesFor('runtime.tick.failed').length, 1);
+  assert.equal(logger.getMessagesFor('runtime.tick.backing_off_after_rate_limit').length, 1);
+  assert.equal(clock.nextTimeoutMs, 60_000);
 
   handle.stop();
 });
@@ -395,9 +442,11 @@ test('reload interval is clamped to at least 1000ms', async () => {
 
   // first tick runs at t=0
   clock.runNext();
+  await flushAsync();
 
   // then reload to an interval below the safe minimum
   reloader.triggerReload(baseWorkflow(250));
+  await flushAsync();
   assert.equal(clock.nextTimeoutMs, 1000);
 
   clock.runNext();
@@ -426,12 +475,12 @@ test('stop cancels service and invokes reloader stop', async () => {
     installSignalHandlers: false,
   });
 
-  const stopMessage = logger.getMessagesFor('service.shutdown_requested');
-  assert.equal(stopMessage.length, 0);
+  assert.equal(logger.getMessagesFor('service.shutdown_requested').length, 0);
 
   handle.stop();
+  await flushAsync();
   assert.equal(reloader.stopCalls, 1);
-  assert.equal(stopMessage.length, 1);
+  assert.equal(logger.getMessagesFor('service.shutdown_requested').length, 1);
 
   const callsAfterStop = runtime.tickCalls;
   clock.runAll();

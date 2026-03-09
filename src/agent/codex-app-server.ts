@@ -349,12 +349,38 @@ export class CodexAppServerClient {
     // Step 2: Send thread/start. Reuse an existing thread for continuation turns,
     // or start a new one. Always include cwd and title for protocol compatibility.
     const threadTitle = formatThreadTitle(params.identifier, params.title);
+    const configuredCommand = this.options.command ?? '';
+    const dangerMode =
+      configuredCommand.includes('danger-full-access') ||
+      this.command.includes('danger-full-access') ||
+      this.args.includes('danger-full-access');
+    const sandboxMode = dangerMode ? 'danger-full-access' : 'workspace-write';
+    const sandboxConfig = dangerMode
+      ? undefined
+      : {
+          sandbox_workspace_write: {
+            writable_roots: [this.options.cwd],
+            network_access: true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+          },
+        };
+
     const threadStartParams: Record<string, unknown> = this.state.threadId
-      ? { threadId: this.state.threadId, cwd: this.options.cwd }
+      ? {
+          threadId: this.state.threadId,
+          cwd: this.options.cwd,
+          approvalPolicy: 'never',
+          sandbox: sandboxMode,
+          ...(sandboxConfig ? { config: sandboxConfig } : {}),
+        }
       : {
           cwd: this.options.cwd,
           experimentalRawEvents: false,
           persistExtendedHistory: false,
+          approvalPolicy: 'never',
+          sandbox: sandboxMode,
+          ...(sandboxConfig ? { config: sandboxConfig } : {}),
         };
     if (threadTitle !== undefined) {
       threadStartParams.name = threadTitle;

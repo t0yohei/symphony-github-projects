@@ -114,6 +114,7 @@ export async function startService(config: ServiceConfig, deps: ServiceDependenc
   const runtime = bootstrapResult.runtime as PollingRuntime;
   let currentWorkflow = bootstrapResult.workflow;
   let currentPollIntervalMs = bootstrapResult.workflow.polling.intervalMs;
+  const rateLimitBackoffMs = 60_000;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inFlightTick = false;
   let stopping = false;
@@ -126,17 +127,27 @@ export async function startService(config: ServiceConfig, deps: ServiceDependenc
       return;
     }
 
+    let nextDelayMs = currentPollIntervalMs;
     inFlightTick = true;
     try {
       await runtime.tick();
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const rateLimited = /rate limit/i.test(message);
       logger.error('runtime.tick.failed', {
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
+        rate_limited: rateLimited,
       });
+      if (rateLimited) {
+        nextDelayMs = Math.max(currentPollIntervalMs, rateLimitBackoffMs);
+        logger.warn('runtime.tick.backing_off_after_rate_limit', {
+          delay_ms: nextDelayMs,
+        });
+      }
     } finally {
       inFlightTick = false;
       if (!stopping) {
-        scheduleNextTick(currentPollIntervalMs);
+        scheduleNextTick(nextDelayMs);
       }
     }
   };
